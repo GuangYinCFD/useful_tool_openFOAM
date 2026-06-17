@@ -1,0 +1,197 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  5                                     |
+|   \\  /    A nd           | Web:      www.OpenFOAM.org                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+
+
+    calculateIntegral_Drag_Cylinder
+    {
+        type            coded;
+        libs            (utilityFunctionObjects);
+        name            computeCustomIntegral;
+        
+        executeControl  writeTime;
+        writeControl    writeTime;
+
+        codeWrite
+        #{
+            // Get the current time name OpenFOAM is looking at (e.g., "10", "20")
+            word currentTime = mesh().time().timeName();
+
+            // =========================================================================
+            // 1. PATH CONFIGURATION (Update these paths to match your system)
+            // =========================================================================
+            // Static directory for gradPhi
+            fileName gradPhiDrag_cylinder1_Dir = "/cluster/work/users/guangyin/NearWallCyl3D/eD08GD3_Nxy2_Nz96/potential/Drag/cylinder1/0"; 
+            fileName gradPhiDrag_cylinder2_Dir = "/cluster/work/users/guangyin/NearWallCyl3D/eD08GD3_Nxy2_Nz96/potential/Drag/cylinder2/0"; 
+            fileName gradPhiLift_cylinder1_Dir = "/cluster/work/users/guangyin/NearWallCyl3D/eD08GD3_Nxy2_Nz96/potential/Lift/cylinder1/0"; 
+            fileName gradPhiLift_cylinder2_Dir = "/cluster/work/users/guangyin/NearWallCyl3D/eD08GD3_Nxy2_Nz96/potential/Lift/cylinder2/0"; 
+             
+
+            // Dynamic directory for U and vorticity (changes with time step)
+
+            fileName flowFieldsDir = "/cluster/work/users/guangyin/NearWallCyl3D/eD08GD3_Nxy2_Nz96" / currentTime;
+
+ 
+            // =========================================================================
+            // 2. READ STATIC FIELD: gradPhi
+            // =========================================================================
+
+            IOobject gradPhiDrag_cylinder1_Header
+            (
+                "grad(PhiI)", gradPhiDrag_cylinder1_Dir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+
+            IOobject gradPhiDrag_cylinder2_Header
+            (
+                "grad(PhiI)", gradPhiDrag_cylinder2_Dir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+
+
+            IOobject gradPhiLift_cylinder1_Header
+            (
+                "grad(PhiI)", gradPhiLift_cylinder1_Dir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+
+            IOobject gradPhiLift_cylinder2_Header
+            (
+                "grad(PhiI)", gradPhiLift_cylinder2_Dir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+
+
+            if (!gradPhiDrag_cylinder1_Header.typeHeaderOk<volVectorField>(true))
+            {
+                FatalErrorInFunction << "Missing gradPhi in: " << gradPhiDrag_cylinder1_Dir << exit(FatalError);
+            }
+            if (!gradPhiDrag_cylinder2_Header.typeHeaderOk<volVectorField>(true))
+            {
+                FatalErrorInFunction << "Missing gradPhi in: " << gradPhiDrag_cylinder2_Dir << exit(FatalError);
+            }
+            if (!gradPhiLift_cylinder1_Header.typeHeaderOk<volVectorField>(true))
+            {
+                FatalErrorInFunction << "Missing gradPhi in: " << gradPhiLift_cylinder1_Dir << exit(FatalError);
+            }
+            if (!gradPhiLift_cylinder2_Header.typeHeaderOk<volVectorField>(true))
+            {
+                FatalErrorInFunction << "Missing gradPhi in: " << gradPhiLift_cylinder2_Dir << exit(FatalError);
+            }
+
+
+            volVectorField gradPhi_Drag_cylinder1(gradPhiDrag_cylinder1_Header, mesh());
+            volVectorField gradPhi_Drag_cylinder2(gradPhiDrag_cylinder2_Header, mesh());
+            volVectorField gradPhi_Lift_cylinder1(gradPhiLift_cylinder1_Header, mesh());
+            volVectorField gradPhi_Lift_cylinder2(gradPhiLift_cylinder2_Header, mesh());
+
+
+            // =========================================================================
+            // 3. READ TIME-VARYING FIELDS: U and vorticity
+            // =========================================================================
+            // Read U
+            IOobject uHeader
+            (
+                "U", flowFieldsDir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+            if (!uHeader.typeHeaderOk<volVectorField>(true))
+            {
+                Info<< "Skipping time " << currentTime << ": 'U' not found." << endl;
+             
+	    	return true;
+
+            }
+            volVectorField U(uHeader, mesh());
+
+            // Read vorticity
+            IOobject vorHeader
+            (
+                "vorticity", flowFieldsDir, mesh(), IOobject::MUST_READ, IOobject::NO_WRITE
+            );
+            if (!vorHeader.typeHeaderOk<volVectorField>(true))
+            {
+                Info<< "Skipping time " << currentTime << ": 'vorticity' not found." << endl;
+                
+	    	return true;
+
+            }
+            volVectorField vorticity(vorHeader, mesh());
+
+
+            // =========================================================================
+            // 4. MATHEMATICAL REDUCTION
+            // =========================================================================
+            // Access cell volumes directly from RAM
+            const scalarField& volumes = mesh().V();
+ 
+
+ 
+	    scalarField Fx_cylinder1_element = ((vorticity^U) & gradPhi_Drag_cylinder1)().internalField();
+	    scalarField Fx_cylinder2_element = ((vorticity^U) & gradPhi_Drag_cylinder2)().internalField();
+	    scalarField Fy_cylinder1_element = ((vorticity^U) & gradPhi_Lift_cylinder1)().internalField();
+	    scalarField Fy_cylinder2_element = ((vorticity^U) & gradPhi_Lift_cylinder2)().internalField();
+            
+            // Parallel-safe global sum reduction
+ 
+	    scalar Fx_cylinder1_Sum = gSum(Fx_cylinder1_element * volumes);	    
+            scalar Fx_cylinder2_Sum = gSum(Fx_cylinder2_element * volumes);	    
+	    scalar Fy_cylinder1_Sum = gSum(Fy_cylinder1_element * volumes);	    
+            scalar Fy_cylinder2_Sum = gSum(Fy_cylinder2_element * volumes);
+
+ 
+
+
+	   if (Pstream::master())
+            {
+                // FIXED: Using globalPath() roots this in the main case directory
+                fileName outputDir = mesh().time().globalPath() / "postProcessing";
+                fileName outputFile = outputDir / "customIntegral_allcylinders.dat";
+
+                // Ensure the central postProcessing directory exists
+                mkDir(outputDir);
+
+                // Open file stream in append mode (std::ios_base::app)
+                std::ofstream os(outputFile.c_str(), std::ios_base::app);
+
+                // Check if file is brand new to write a single header
+                // We use tellp() to check if file size is 0 bytes
+                os.seekp(0, std::ios_base::end);
+                if (os.tellp() == 0)
+                {
+                    os << "# Custom Integral Evaluation Data\n"
+                       << "# Space-integrated: ((U x vorticity) . gradPhi) * V\n"
+                       << "# Time\t\tFx_cylinder1\t\tFx_cylinder2\t\tFy_cylinder1\t\tFy_cylinder2\n";
+                }
+
+                // Set decimal formatting for data columns
+                os.setf(std::ios::scientific, std::ios::floatfield);
+                os.precision(6);
+
+                // Append the time value and total sum
+                os << mesh().time().value() << "\t" << Fx_cylinder1_Sum << "\t" << Fx_cylinder2_Sum << "\t" << Fy_cylinder1_Sum << "\t" << Fy_cylinder2_Sum << "\n";
+            }
+
+
+
+
+            // Output results
+            Info<< "\n========================================================" << endl;
+            Info<< "Processed Time = " << currentTime << endl;
+            Info<< "Calculated Sum: " << Fx_cylinder1_Sum << endl;
+            Info<< "========================================================\n" << endl;
+
+	    return true;
+        #};
+    }
+ 
+
+
+
+
+
+
+ 
+ 
+
+
+// ************************************************************************* //
